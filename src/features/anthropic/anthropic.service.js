@@ -125,11 +125,6 @@ function extractAssistantPlainText(content) {
  */
 async function generateReplyFromChatwootConversation(accountId, conversationId, latestInboundPlaintext) {
   const rows = await fetchChatwootHistoryForAnthropic(accountId, conversationId);
-  console.log('[AnthropicService] Histórico Chatwoot carregado:', {
-    accountId,
-    conversationId,
-    mensagens_crudas: rows.length,
-  });
   const turns = buildAnthropicTurnsFromChatwootRows(rows, latestInboundPlaintext);
   return generateReplyFromMessages(turns);
 }
@@ -164,14 +159,6 @@ async function generateReplyFromMessages(seedMessages) {
     let lastAssistantText = '';
 
     for (let round = 0; round < maxToolRounds; round += 1) {
-      console.log('[AnthropicService] Chamando API Anthropic / messages.create', {
-        round,
-        model: defaultModelId(),
-        max_tokens: maxTokens(),
-        toolsCount: tools.length,
-        seedTurnCount: seedMessages?.length ?? 0,
-        currentMessagesCount: messages.length,
-      });
       // eslint-disable-next-line no-await-in-loop
       const response = await client.messages.create({
         model: defaultModelId(),

@@ -13,20 +13,6 @@ function extractPayloadShape(body) {
   return envelope || {};
 }
 
-/**
- * Tipos de sender reportados pelo Chatwoot (payload varia por canal / versão).
- */
-function resolveSenderTypes(parsed, envelope) {
-  const msgBlock = parsed.message || parsed;
-  const senderDirect = parsed.sender || msgBlock?.sender;
-  return {
-    messageSenderType: msgBlock?.sender?.type ?? null,
-    topLevelSenderType: senderDirect?.type ?? null,
-    conversationMetaSenderType:
-      parsed.conversation?.meta?.sender?.type ?? envelope?.conversation?.meta?.sender?.type ?? null,
-  };
-}
-
 function isMessageCreatedEvent(eventStr) {
   return `${eventStr}`.trim().toLowerCase() === 'message_created';
 }
@@ -123,10 +109,6 @@ async function findOrCreateUserByChatwootContact(contactId, conversationId) {
       chatwoot_contact_id: cid,
       chatwoot_conversation_id: String(conversationId),
     });
-    console.log('[ChatwootService] Cadastro provisório CLIENTE criado.', {
-      userId: user.id,
-      chatwoot_contact_id: cid,
-    });
     return user;
   } catch (err) {
     if (err instanceof UniqueConstraintError) {
@@ -147,12 +129,6 @@ async function processWebhookEnvelopeImpl(rawBody) {
   const envelope = typeof rawBody === 'object' ? rawBody : {};
   const event = envelope.event || envelope.meta?.event;
   const parsed = extractPayloadShape(envelope);
-  const senderInfo = resolveSenderTypes(parsed, envelope);
-
-  console.log('[ChatwootService] Webhook recebido:', {
-    event: event ?? null,
-    sender: senderInfo,
-  });
 
   if (!event || !isMessageCreatedEvent(event)) {
     return { skipped: true, reason: 'evento não é message_created' };
@@ -173,20 +149,12 @@ async function processWebhookEnvelopeImpl(rawBody) {
   }
 
   if (!isChatwootIaAutoReplyEnabled()) {
-    console.log(
-      '[ChatwootService] Resposta automática pela IA desligada (CHATWOOT_IA_AUTO_REPLY≠true); nada será enviado ao Chatwoot.'
-    );
     return {
       skipped: true,
       reason: 'CHATWOOT_IA_AUTO_REPLY não habilitado (defina true no .env para a IA responder)',
       ia_auto_reply: false,
     };
   }
-
-  console.log('[ChatwootService] Mensagem de humano recebida. Chamando IA...', {
-    conversationId,
-    contactId,
-  });
 
   const user = await findOrCreateUserByChatwootContact(contactId, conversationId);
 
@@ -210,7 +178,6 @@ async function processWebhookEnvelopeImpl(rawBody) {
 
   try {
     await chatwootClient.postTextReply(accountId, conversationId, reply);
-    console.log('[ChatwootClient] Resposta enviada com sucesso!');
   } catch (err) {
     if (!axios.isAxiosError(err)) throw err;
     throw new AppError(

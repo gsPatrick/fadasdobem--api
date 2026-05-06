@@ -1,18 +1,52 @@
-# Plataforma Fadas do Bem — Arquitetura de dados e contrato técnico (Fase 1)
+# API REST — Plataforma Fadas do Bem
+
+Pacote **`fadasdobem--api`** (Node.js, Express, Sequelize e PostgreSQL). Este ficheiro é a **entrada oficial** ao repositório da API para execução local, visão da estrutura de código e **contrato técnico consolidado da Fase 1** (domínio de dados).
 
 ---
 
-## Visão executiva
+## Requisitos e execução
 
-Este documento oficializa o **contrato técnico da Fase 1** do sistema **Fadas do Bem**: modelo relacional, papel de cada entidade núcleo no domínio da aplicação e decisões de modelagem consideradas bloqueantes para evoluções subsequentes. O desenho objetiva **alta disponibilidade** e suporte transacional à **fila inteligente de atendimento**, ao **cronômetro de consultas** com política comercial **2+X+2**, e a uma **camada financeira integrada ao Mercado Pago** — incluindo rastreabilidade ponta a ponta de cobrança, NFS-e automatizada onde aplicável e governança de saldo compatível com **LGPD**.
+| Item | Detalhe |
+|------|---------|
+| **Runtime** | Node.js **≥ 18** |
+| **Base de dados** | PostgreSQL (configuração via `.env`; ver `.env.example`) |
+| **Instalação** | `npm install` |
+| **Variáveis** | Copiar `.env.example` → `.env` e preencher segredos e URLs |
 
-A pasta **`src/documentacao`** é o repositório normativo de dados da API ao lado deste repositório. Em **`src/documentacao/models/`**, a especificação reflete diretamente o **esquema persistido** (campos e tabelas); **`src/documentacao/models/Relacionamentos_FKs.md`** documenta integridade referencial. Em evoluções, artefatos em **`src/features`** e módulos correlatos devem permanecer consistentes com esta base, preservando correspondência entre **estrutura de dados**, **código aplicacional** e **regras de negócio** versionadas.
+```bash
+cp .env.example .env
+# Ajustar PostgreSQL, JWT, Redis (se utilizado em fases seguintes), etc.
+
+npm run start       # Produção/simples
+npm run dev         # Reload com node --watch
+```
+
+A porta padrão é **`3000`** (`PORT` no `.env`). Probes típicos: `GET /health`, `GET /ping`; rotas da API agrupadas em **`/api/*`** — por exemplo **`GET /api/v1/health`**.
+
+Para smoke tests HTTP, coleções exemplo em **`src/postman/`**.
 
 ---
 
-## Diagrama macro (ERD)
+## Organização do código-fonte (`src/`)
 
-O diagrama sintetiza entidades núcleo e cardinalidades. Ambientes compatíveis com Mermaid renderizam o bloco abaixo diretamente.
+Para **separação de preocupações** e **manutenibilidade**:
+
+- **`src/providers`** — Integrações externas (clientes HTTP, SDKs Anthropic/OpenAI, Resend/e-mail, Chatwoot, Evolution API). Adaptação de protocolos e formatos **sem** regra de negócio central do domínio.
+- **`src/features`** — Casos de uso e módulos de negócio (autenticação, webhook Chatwoot/IA, etc.). Dependências apenas no sentido **feature → provider**, não o inverso.
+- **`src/documentacao`** — Documentação mantida ao lado da implementação. A especificação **campo a campo** do modelo persistido encontra-se em **`src/documentacao/models/`** e em **`Relacionamentos_FKs.md`** (ver também [Documentação complementar](./src/documentacao/README.md)).
+- **`src/config`**, **`src/middlewares`**, **`src/utils`**, **`src/models`** — Configuração, cruzamentos HTTP transversais, utilitários e modelos Sequelize alinhados ao esquema.
+
+---
+
+## Contrato técnico — Fase 1 (modelo de dados)
+
+Formaliza modelo relacional, função de cada entidade núcleo no domínio da aplicação e decisões de modelagem tratadas como invariantes para evoluções posteriores. O desenho privilegia **alta disponibilidade** e suporte transacional à **fila de atendimento**, ao **cronômetro de consultas** com política comercial **2+X+2**, e a uma **camada financeira integrada ao Mercado Pago**, com rastreabilidade de cobrança e governança de saldo compatível com **LGPD**.
+
+Artefatos sob **`src/features`**, **`src/providers`** e **`src/models`** permanecem obrigados à consistência com este contrato.
+
+### Diagrama macro (ERD)
+
+Ambientes compatíveis com Mermaid renderizam o bloco diretamente.
 
 ```mermaid
 erDiagram
@@ -51,9 +85,7 @@ erDiagram
   users ||--o{ audit_logs : "acoes gestoras"
 ```
 
----
-
-## Dicionário de dados consolidado
+### Dicionário de dados consolidado
 
 |Tabela|Papel no negócio|
 |------|------------------|
@@ -76,26 +108,24 @@ erDiagram
 |**`payout_requests`**|Formalização dos **pedidos de repasse (saque PIX)** solicitados pelas especialistas e processados pela operação.|
 |**`otps`**|Fluxos seguros de **OTP** para recuperação e verificações sensíveis, com limites de tentativa.|
 |**`audit_logs`**|Trilhas de decisões da **Gestora** sobre o sistema (*quem mudou o quê, quando*, com deltas), essencial para auditoria e segurança operacional.|
-|**`platform_integrations`**|Centraliza no banco os **credenciais, status de conexão e QR Codes** geridos pelo Painel (**WhatsApp Evolution API** + **Chatwoot** global/config). Permite proxy administrativo pela API sem depender de ferramentas externas manuais no dia a dia da cliente.|
+|**`platform_integrations`**|Centraliza no banco os **credenciais, status de conexão e QR Codes** geridos pelo Painel (**WhatsApp Evolution API** + **Chatwoot** global/config). Habilita proxy administrativo pela API sem depender de ferramentas externas manuais no dia a dia da cliente.|
+
+### Decisões arquiteturais críticas
+
+- **Transações de dupla entrada (Ledger)** — Cada movimentação econômica relevante é representada simultaneamente como **saída** de uma conta e **entrada** em outra, com valores auditáveis (`transaction_ledger`). A reconciliação com o esperado pela **Gestora** e pela **Financeira** fica garantida; evitam-se carteiras inexplicavelmente divergentes ou inconsistências que afetem cliente e reputação.
+
+- **Cofre de webhooks (`raw_webhook_payload` em JSONB)** — Os retornos do **Mercado Pago** podem conter nuances ainda não mapeadas em colunas estruturadas. A persistência do **payload bruto** viabiliza **investigações forenses**, suporte, **chargebacks** e atualizações de integração sem perda de história de origem (“nenhum byte importante se perde quando o gateway evoluir”).
+
+- **Índices parciais com *soft delete* (único apenas para linhas “vivas”)** — Com exclusão lógica compatível com **LGPD** (*soft delete*, `deleted_at` preenchido), **e-mails**, **CPFs** quando informados e outras chaves públicas não permanecem bloqueados indefinidamente apenas por registros inativos — permitindo novo cadastro legítimo alinhado ao consentimento sem travar onboarding indevido.
+
+- **Snapshots financeiros na própria `sessions`** — **Preço por minuto** aplicado naquele ciclo de consulta e **percentuais de comissão** (e derivados econômicos associados à sessão) são **congelados no encerramento**. Alterações posteriores em preço ou comissões **não reescrevem o passado**, preservando relatórios, **compliance** e apuração de períodos encerrados.
 
 ---
 
-## Decisões arquiteturais críticas
+## Referência campo a campo
 
-- **Transações de dupla entrada (Ledger)** — Cada movimentação econômica relevante aparece simultaneamente como **saída** de uma conta e **entrada** em outra, com valores auditáveis (`transaction_ledger`). Isso garante reconciliação com o esperado pela **Gestora** e pela **Financeira**, e evita cenários onde a carteira “apareça” maior ou menor sem explicação (prevenindo saldo inexplicável e inconsistências graves que afetariam cliente e reputação).
-
-- **Cofre de webhooks (`raw_webhook_payload` em JSONB)** — Os retornos do **Mercado Pago** podem revelar nuances que campos já mapeados ainda não cobrem. Persistir o **payload bruto** permite **investigações forenses**, suporte rápido, **chargebacks** e atualizações de integração sem perda da história de origem (“nenhum byte importante se perde quando o gateway evoluir”).
-
-- **Índices parciais com *soft delete* (único apenas para linhas “vivas”)** — Ao excluir conta de forma compatível com **LGPD** (*soft delete*, `deleted_at` preenchido), **e-mails**, **CPFs** quando informados e outras chaves públicas não ficam eternamente bloqueadas no banco apenas por um registro lógico inativo — permitindo um **novo ciclo honesto da cliente**, sem violar o espírito do consentimento nem travar onboarding legítimo.
-
-- **Snapshots financeiros na própria `sessions`** — **Preço por minuto** aplicado naquele ciclo de consulta e **percentuais de comissão** (e derivados econômicos associados à sessão) são **congelados no momento do fechamento**. Assim, alterações posteriores em tabelas de preço ou de comissões **não reescrevem o passado** nem corrompem relatórios, **compliance** ou **apuração retrospective** de períodos já encerrados.
+A especificação detalhada (tipos, nulidade, regras e índices) está fragmentada em **`src/documentacao/models/`** (por exemplo `User.md`, `Session.md`, `PaymentOrder.md`) e **`src/documentacao/models/Relacionamentos_FKs.md`**. Alterações ao esquema físico devem refletir primeiro o modelo persistido e, na mesma entrega ou após migrações, estes artefatos.
 
 ---
 
-## Onde encontrar o detalhamento por tabela
-
-A listagem **campo a campo**, tipos, nulidade e índices encontra-se nos ficheiros individuais de **`src/documentacao/models/`** (por exemplo `User.md`, `Session.md`, `PaymentOrder.md`). Alterações ao esquema físico devem ser refletidas nesses artefatos na mesma entrega ou imediatamente após migrações aplicadas — o subdiretório **constitui contrato vivo** em relação ao modelo persistido.
-
----
-
-*Escopo: **Fase 1 — modelo de dados** do sistema Fadas do Bem. Atualizações de produto que impliquem mudanças de esquema ou de invariantes de negócio devem atualizar primeiro o modelo persistido e, em seguida, este contrato.*
+*Escopo: **Fase 1 — modelo de dados**. Alterações de produto que impliquem mudanças de esquema ou invariantes de negócio devem atualizar primeiro o modelo persistido e, em seguida, este contrato.*
