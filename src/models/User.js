@@ -96,7 +96,12 @@ module.exports = (sequelize) => {
           where: { deleted_at: null },
         },
         { fields: ['role'] },
-        { fields: ['chatwoot_contact_id'] },
+        {
+          unique: true,
+          name: 'users_chatwoot_contact_id_deleted_at_null_uidx',
+          fields: ['chatwoot_contact_id'],
+          where: { deleted_at: null },
+        },
         { fields: ['chatwoot_conversation_id'] },
         { fields: ['openai_thread_id'] },
       ],

@@ -30,9 +30,18 @@ router.get('/v1/ping', (_req, res) => {
 });
 
 router.get('/health', (_req, res) => {
+  const anthropicApiKeyPresent = Boolean(
+    process.env.ANTHROPIC_API_KEY && String(process.env.ANTHROPIC_API_KEY).trim()
+  );
   return responderSucesso(
     res,
-    { servico: 'fadasdobem-api', versao: API_VERSION_SEMVER, modulo: 'api', agrupamento: '/' },
+    {
+      servico: 'fadasdobem-api',
+      versao: API_VERSION_SEMVER,
+      modulo: 'api',
+      agrupamento: '/',
+      anthropic_api_key_configurada: anthropicApiKeyPresent,
+    },
     'API disponível.',
     200
   );
