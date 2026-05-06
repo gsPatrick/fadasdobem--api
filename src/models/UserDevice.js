@@ -18,8 +18,9 @@ module.exports = (sequelize) => {
       },
       push_token: {
         type: DataTypes.STRING(512),
-        allowNull: false,
-        comment: 'FCM/APNs ou equivalente',
+        allowNull: true,
+        comment:
+          'FCM/APNs; null ou token sintético `web:+hash` quando só registo WEB (sessão navegador)',
       },
       platform: {
         type: DataTypes.ENUM(...PLATFORMS),

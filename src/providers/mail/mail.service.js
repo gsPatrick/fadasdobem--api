@@ -1,6 +1,7 @@
 const { getResend } = require('./resend.client');
 const otpEmailHtml = require('./templates/otp.template');
 const welcomeEmailHtml = require('./templates/welcome.template');
+const verifyEmailHtml = require('./templates/verifyEmail.template');
 
 function resolveFromHeader() {
   return (process.env.EMAIL_FROM || '').trim();
@@ -66,7 +67,30 @@ async function sendWelcomeEmail(to) {
   }
 }
 
+async function sendVerificationEmail(to, verificationUrl) {
+  try {
+    const resend = getResend();
+    const from = resolveFromHeader();
+    if (!resend || !from) {
+      console.error('[mail.service] Verificação de e-mail não configurada — RESEND_API_KEY ou EMAIL_FROM ausente.');
+      return;
+    }
+    const toAddress = `${to ?? ''}`.trim();
+    if (!toAddress || !verificationUrl) return;
+    const html = verifyEmailHtml(verificationUrl);
+    await resend.emails.send({
+      from,
+      to: toAddress,
+      subject: 'Fadas do Bem — confirme seu e-mail',
+      html,
+    });
+  } catch (err) {
+    console.error('[mail.service] Falha ao enviar verificação de e-mail:', err?.message || err);
+  }
+}
+
 module.exports = {
   sendOtpEmail,
   sendWelcomeEmail,
+  sendVerificationEmail,
 };

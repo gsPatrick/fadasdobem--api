@@ -33,7 +33,7 @@ module.exports = (sequelize) => {
       },
       blocked_at: { type: DataTypes.DATE, allowNull: true },
       block_reason: { type: DataTypes.TEXT, allowNull: true },
-      email_verified_at: { type: DataTypes.DATE, allowNull: true },
+      email_verified_at: { type: DataTypes.DATE, allowNull: true, comment: 'Null até confirmação (R7)' },
       phone: { type: DataTypes.STRING(32), allowNull: true },
       phone_verified_at: { type: DataTypes.DATE, allowNull: true },
       last_login_at: { type: DataTypes.DATE, allowNull: true },
@@ -66,6 +66,12 @@ module.exports = (sequelize) => {
         type: DataTypes.STRING(512),
         allowNull: true,
         comment: 'Avatar genérico da conta (além dos avatares de vitrine)',
+      },
+      email_pending_review: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        comment: 'R7 — mais de 7 dias sem confirmar email; alerta operações',
       },
       mercadopago_customer_id: {
         type: DataTypes.STRING(64),

@@ -18,6 +18,10 @@ require('./src/models');
 const app = express();
 const port = process.env.PORT || 3000;
 
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', Number(process.env.TRUST_PROXY_COUNT) || 1);
+}
+
 app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
@@ -89,6 +93,10 @@ async function start() {
 
     app.listen(port, () => {
       console.log(`API escutando na porta ${port}`);
+      const {
+        scheduleEmailPendingReviewJob,
+      } = require('./src/features/auth/auth.emailPending.job');
+      scheduleEmailPendingReviewJob();
     });
   } catch (err) {
     console.error('Falha ao iniciar a API:', err);

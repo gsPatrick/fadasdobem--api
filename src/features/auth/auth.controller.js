@@ -2,14 +2,21 @@ const authService = require('./auth.service');
 const { responderSucesso } = require('../../utils/response.util');
 const { catchAsyncRoute } = require('../../utils/catchAsync.util');
 
+function reqMeta(req) {
+  return {
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+  };
+}
+
 module.exports = {
   register: catchAsyncRoute(async (req, res) => {
-    const dados = await authService.register(req.body);
+    const dados = await authService.register(req.body, reqMeta(req));
     return responderSucesso(res, dados, 'Conta criada com sucesso.', 201);
   }),
 
   login: catchAsyncRoute(async (req, res) => {
-    const dados = await authService.login(req.body);
+    const dados = await authService.login(req.body, reqMeta(req));
     return responderSucesso(res, dados, 'Login realizado com sucesso.', 200);
   }),
 
@@ -24,10 +31,7 @@ module.exports = {
   }),
 
   forgotPassword: catchAsyncRoute(async (req, res) => {
-    const dados = await authService.forgotPassword(req.body, {
-      ip: req.ip,
-      userAgent: req.headers['user-agent'],
-    });
+    const dados = await authService.forgotPassword(req.body, reqMeta(req));
     return responderSucesso(
       res,
       dados,
@@ -37,8 +41,18 @@ module.exports = {
   }),
 
   resetPassword: catchAsyncRoute(async (req, res) => {
-    const dados = await authService.resetPassword(req.body);
+    const dados = await authService.resetPassword(req.body, reqMeta(req));
     return responderSucesso(res, dados, 'Senha redefinida com sucesso.', 200);
+  }),
+
+  verifyEmail: catchAsyncRoute(async (req, res) => {
+    const dados = await authService.verifyEmailFromToken(req.query.token, reqMeta(req));
+    return responderSucesso(res, dados, dados.mensagem || 'E-mail confirmado.', 200);
+  }),
+
+  resendVerification: catchAsyncRoute(async (req, res) => {
+    const dados = await authService.resendVerificationEmail(req.user, reqMeta(req));
+    return responderSucesso(res, dados, 'Se aplicável, reenviamos o e-mail de confirmação.', 200);
   }),
 
   getMe: catchAsyncRoute(async (req, res) => {

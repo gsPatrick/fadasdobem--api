@@ -12,7 +12,8 @@ module.exports = (sequelize) => {
       },
       admin_id: {
         type: DataTypes.UUID,
-        allowNull: false,
+        allowNull: true,
+        comment: 'Gestor que executou a ação; null em eventos de segurança do próprio cliente (Auth)',
       },
       action: {
         type: DataTypes.STRING(120),

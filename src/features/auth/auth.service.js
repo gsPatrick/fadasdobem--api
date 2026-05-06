@@ -2,7 +2,14 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Op, UniqueConstraintError } = require('sequelize');
-const { sequelize, User, Client, OTP, RefreshToken } = require('../../models');
+const {
+  sequelize,
+  User,
+  Client,
+  OTP,
+  RefreshToken,
+  UserDevice,
+} = require('../../models');
 const {
   assertJwtSecretsLoaded,
   jwtSignOptionsAccess,
@@ -11,12 +18,18 @@ const {
 } = require('../../config/auth.config');
 const AppError = require('../../utils/AppError');
 const mailService = require('../../providers/mail/mail.service');
+const {
+  AUTH_CONFIG,
+  AUTH_MESSAGES,
+  normalizeEmail,
+  isValidEmailFormat,
+  assertEmailFormat,
+  assertPasswordPolicy,
+} = require('./auth.constants');
+const { isDisposableEmailAddress } = require('../../config/disposableEmails.config');
+const { recordAuthSecurityAudit } = require('./auth.audit.util');
 
-const MIN_PASSWORD_LENGTH = 8;
-
-function normalizeEmail(email) {
-  return `${email || ''}`.trim().toLowerCase();
-}
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 function tokenExpiresInSecondsFromJwt(token) {
   const decoded = jwt.decode(token);
@@ -30,18 +43,6 @@ function sanitizeUserRecord(userInstance) {
   const plain = userInstance.get({ plain: true });
   delete plain.password_hash;
   return plain;
-}
-
-async function assertPasswordPolicy(plainPassword) {
-  const pw = `${plainPassword ?? ''}`;
-  if (pw.length < MIN_PASSWORD_LENGTH) {
-    throw new AppError(
-      `A senha deve ter no mínimo ${MIN_PASSWORD_LENGTH} caracteres.`,
-      400,
-      null,
-      true
-    );
-  }
 }
 
 async function issueTokenPairForUser(userRecord) {
@@ -100,23 +101,167 @@ async function revokeAllRefreshTokensForUser(userId) {
   );
 }
 
-/**
- * POST /register
- */
-async function register({ email, password, accepted_terms_version }) {
+/** R8.1 — registo/leitura de sessão WEB por IP/User-Agent */
+async function recordWebLoginDevice(userId, ip, userAgent) {
+  const ua = `${userAgent || ''}`.trim();
+  const ipStr = `${ip || ''}`.slice(0, 45);
+  const hash = crypto
+    .createHash('sha256')
+    .update(`${userId}|${ipStr}|${ua}`)
+    .digest('hex')
+    .slice(0, 48);
+  const token = `${AUTH_CONFIG.webDeviceTokenPrefix}${hash}`;
+
+  const [device] = await UserDevice.findOrCreate({
+    where: { user_id: userId, push_token: token },
+    defaults: {
+      user_id: userId,
+      push_token: token,
+      platform: 'WEB',
+      device_name: ua ? ua.slice(0, 128) : 'Web',
+      last_seen_at: new Date(),
+      is_active: true,
+    },
+  });
+
+  await device.update({
+    last_seen_at: new Date(),
+    ...(ua ? { device_name: ua.slice(0, 128) } : {}),
+  });
+}
+
+/** R7 — token OTP com id explícito (evita varreduras na BD). */
+async function enqueueEmailVerification(userId, mail, reqMeta = {}) {
+  await OTP.update(
+    { consumed_at: new Date() },
+    {
+      where: {
+        user_id: userId,
+        purpose: AUTH_CONFIG.otpPurposeEmailVerify,
+        consumed_at: null,
+      },
+    }
+  );
+
+  const secret = crypto.randomBytes(32).toString('base64url');
+  const row = await OTP.create({
+    user_id: userId,
+    purpose: AUTH_CONFIG.otpPurposeEmailVerify,
+    code: await bcrypt.hash(secret, AUTH_CONFIG.bcryptCostPassword),
+    expires_at: new Date(Date.now() + AUTH_CONFIG.emailVerifyTtlHours * 3600 * 1000),
+    attempts_count: 0,
+    max_attempts: 5,
+    delivery_channel: AUTH_CONFIG.otpDeliveryChannelEmail,
+    ip_address_created: reqMeta.ip || null,
+    user_agent_created: reqMeta.userAgent || null,
+  });
+
+  const payload = JSON.stringify({ otpId: row.id, s: secret });
+  const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+  const query = `token=${encodeURIComponent(encoded)}`;
+  const basePublic = `${process.env.API_PUBLIC_URL || ''}`.trim().replace(/\/+$/, '');
+  const url = basePublic
+    ? `${basePublic}/api/v1/auth/verify-email?${query}`
+    : `http://localhost:${process.env.PORT || 3000}/api/v1/auth/verify-email?${query}`;
+  void mailService.sendVerificationEmail(mail, url);
+}
+
+/** Marca contas há mais de 7 dias sem e-mail confirmado (R7). */
+async function syncEmailPendingReviewFlags() {
+  const cutoff = new Date(Date.now() - SEVEN_DAYS_MS);
+  const [affected] = await User.update(
+    { email_pending_review: true },
+    {
+      where: {
+        email_verified_at: null,
+        email_pending_review: false,
+        created_at: { [Op.lt]: cutoff },
+      },
+    }
+  );
+  return affected;
+}
+
+async function verifyEmailFromToken(tokenRaw, reqMeta = {}) {
+  let parsed;
+  try {
+    const decoded = Buffer.from(`${tokenRaw || ''}`, 'base64url').toString('utf8');
+    parsed = JSON.parse(decoded);
+  } catch {
+    throw new AppError(AUTH_MESSAGES.VERIFY_EMAIL_BAD_TOKEN, 400, null, true);
+  }
+
+  const row = await OTP.findOne({
+    where: {
+      id: parsed.otpId,
+      purpose: AUTH_CONFIG.otpPurposeEmailVerify,
+      consumed_at: null,
+      expires_at: { [Op.gt]: new Date() },
+    },
+  });
+
+  if (!row || !parsed.s) {
+    throw new AppError(AUTH_MESSAGES.VERIFY_EMAIL_BAD_TOKEN, 400, null, true);
+  }
+
+  const ok = await bcrypt.compare(`${parsed.s}`, row.code);
+  if (!ok) {
+    throw new AppError(AUTH_MESSAGES.VERIFY_EMAIL_BAD_TOKEN, 400, null, true);
+  }
+
+  await sequelize.transaction(async (t) => {
+    await row.update({ consumed_at: new Date() }, { transaction: t });
+    await User.update(
+      { email_verified_at: new Date(), email_pending_review: false },
+      { where: { id: row.user_id }, transaction: t }
+    );
+  });
+
+  await recordAuthSecurityAudit({
+    action: 'AUTH_EMAIL_VERIFIED',
+    userId: row.user_id,
+    ip: reqMeta.ip,
+    userAgent: reqMeta.userAgent,
+    metadata: { otp_id: row.id },
+  });
+
+  return { verificado: true, mensagem: AUTH_MESSAGES.VERIFY_EMAIL_SUCCESS };
+}
+
+async function resendVerificationEmail(accessUser, reqMeta = {}) {
+  if (accessUser.email_verified_at) {
+    return { enviado: false, motivo: 'already_verified' };
+  }
+  const mail = normalizeEmail(accessUser.email);
+  await enqueueEmailVerification(accessUser.id, mail, reqMeta);
+  return { enviado: true };
+}
+
+/** POST /register */
+async function register({ email, password, accepted_terms_version }, reqMeta = {}) {
+  assertEmailFormat(email);
   const mail = normalizeEmail(email);
-  await assertPasswordPolicy(password);
-  const terms = `${accepted_terms_version ?? ''}`.trim();
+
+  if (isDisposableEmailAddress(mail)) {
+    throw new AppError(AUTH_MESSAGES.EMAIL_DISPOSABLE, 400, null, true);
+  }
+
+  assertPasswordPolicy(password);
+
+  if (accepted_terms_version === undefined || accepted_terms_version === null) {
+    throw new AppError(AUTH_MESSAGES.TERMS_ACCEPTANCE_REQUIRED, 400, null, true);
+  }
+  const terms = `${accepted_terms_version}`.trim();
   if (!terms) {
-    throw new AppError('Aceite de termos (`accepted_terms_version`) é obrigatório.', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.TERMS_ACCEPTANCE_REQUIRED, 400, null, true);
   }
 
   const exists = await User.findOne({ where: { email: mail } });
   if (exists) {
-    throw new AppError('Este e-mail já está cadastrado.', 409, null, true);
+    throw new AppError(AUTH_MESSAGES.EMAIL_ALREADY_REGISTERED, 409, null, true);
   }
 
-  const password_hash = await bcrypt.hash(password, 12);
+  const password_hash = await bcrypt.hash(password, AUTH_CONFIG.bcryptCostPassword);
 
   let user;
   try {
@@ -125,10 +270,12 @@ async function register({ email, password, accepted_terms_version }) {
         {
           email: mail,
           password_hash,
-          role: 'CLIENTE',
+          role: AUTH_CONFIG.roleClienteNoRegistro,
+          email_verified_at: null,
+          email_pending_review: false,
           accepted_terms_version: terms,
           accepted_terms_at: new Date(),
-          onboarding_step: 1,
+          onboarding_step: AUTH_CONFIG.onboardingStepAfterRegister,
           is_active: true,
         },
         { transaction: t }
@@ -143,7 +290,7 @@ async function register({ email, password, accepted_terms_version }) {
     });
   } catch (err) {
     if (err instanceof UniqueConstraintError || err.name === 'SequelizeUniqueConstraintError') {
-      throw new AppError('Este e-mail já está cadastrado.', 409, null, true);
+      throw new AppError(AUTH_MESSAGES.EMAIL_ALREADY_REGISTERED, 409, null, true);
     }
     throw err;
   }
@@ -152,7 +299,16 @@ async function register({ email, password, accepted_terms_version }) {
     include: [{ model: Client, as: 'client_profile', required: false }],
   });
 
+  await recordAuthSecurityAudit({
+    action: 'AUTH_REGISTER_SUCCESS',
+    userId: user.id,
+    ip: reqMeta.ip,
+    userAgent: reqMeta.userAgent,
+    metadata: { terms_version: terms },
+  });
+
   void mailService.sendWelcomeEmail(mail);
+  void enqueueEmailVerification(user.id, mail, reqMeta);
 
   const tokens = await issueTokenPairForUser(user);
   return {
@@ -161,10 +317,9 @@ async function register({ email, password, accepted_terms_version }) {
   };
 }
 
-/**
- * POST /login
- */
-async function login({ email, password }) {
+/** POST /login */
+async function login({ email, password }, reqMeta = {}) {
+  assertEmailFormat(email);
   const mail = normalizeEmail(email);
   const user = await User.findOne({
     where: { email: mail },
@@ -172,18 +327,46 @@ async function login({ email, password }) {
   });
 
   if (!user || !user.password_hash) {
-    throw new AppError('Credenciais inválidas.', 401, null, true);
+    await recordAuthSecurityAudit({
+      action: 'AUTH_LOGIN_FAILURE',
+      userId: null,
+      ip: reqMeta.ip,
+      userAgent: reqMeta.userAgent,
+      metadata: { reason: 'unknown_user_or_no_password' },
+    });
+    throw new AppError(AUTH_MESSAGES.LOGIN_CREDENTIALS_GENERIC, 401, null, true);
   }
   if (!user.is_active || user.blocked_at) {
-    throw new AppError('Conta indisponível para login.', 403, null, true);
+    await recordAuthSecurityAudit({
+      action: 'AUTH_LOGIN_FAILURE',
+      userId: user.id,
+      ip: reqMeta.ip,
+      userAgent: reqMeta.userAgent,
+      metadata: { reason: 'inactive_or_blocked' },
+    });
+    throw new AppError(AUTH_MESSAGES.ACCOUNT_UNAVAILABLE_LOGIN, 403, null, true);
   }
 
   const ok = await bcrypt.compare(`${password ?? ''}`, user.password_hash);
   if (!ok) {
-    throw new AppError('Credenciais inválidas.', 401, null, true);
+    await recordAuthSecurityAudit({
+      action: 'AUTH_LOGIN_FAILURE',
+      userId: user.id,
+      ip: reqMeta.ip,
+      userAgent: reqMeta.userAgent,
+      metadata: { reason: 'bad_password' },
+    });
+    throw new AppError(AUTH_MESSAGES.LOGIN_CREDENTIALS_GENERIC, 401, null, true);
   }
 
   await user.update({ last_login_at: new Date() });
+  await recordWebLoginDevice(user.id, reqMeta.ip, reqMeta.userAgent);
+  await recordAuthSecurityAudit({
+    action: 'AUTH_LOGIN_SUCCESS',
+    userId: user.id,
+    ip: reqMeta.ip,
+    userAgent: reqMeta.userAgent,
+  });
 
   const tokens = await issueTokenPairForUser(user);
   return {
@@ -192,13 +375,11 @@ async function login({ email, password }) {
   };
 }
 
-/**
- * POST /refresh-token
- */
+/** POST /refresh-token */
 async function refreshToken({ refresh_token }) {
   const raw = `${refresh_token ?? ''}`.trim();
   if (!raw) {
-    throw new AppError('Refresh token é obrigatório.', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.REFRESH_TOKEN_REQUIRED, 400, null, true);
   }
 
   assertJwtSecretsLoaded();
@@ -206,11 +387,11 @@ async function refreshToken({ refresh_token }) {
   try {
     payload = jwt.verify(raw, process.env.JWT_REFRESH_SECRET, jwtVerifyOptions());
   } catch (_) {
-    throw new AppError('Refresh token inválido ou expirado.', 401, null, true);
+    throw new AppError(AUTH_MESSAGES.REFRESH_TOKEN_INVALID_OR_EXPIRED, 401, null, true);
   }
 
   if (payload.token_use !== 'refresh' || !payload.jti) {
-    throw new AppError('Token de renovação malformado.', 401, null, true);
+    throw new AppError(AUTH_MESSAGES.REFRESH_TOKEN_MALFORMED, 401, null, true);
   }
 
   const row = await RefreshToken.findOne({
@@ -223,7 +404,7 @@ async function refreshToken({ refresh_token }) {
   });
 
   if (!row) {
-    throw new AppError('Sessão de refresh inválida ou revogada.', 401, null, true);
+    throw new AppError(AUTH_MESSAGES.REFRESH_SESSION_INVALID, 401, null, true);
   }
 
   await row.update({ revoked_at: new Date() });
@@ -233,7 +414,7 @@ async function refreshToken({ refresh_token }) {
   });
 
   if (!user || !user.is_active || user.blocked_at) {
-    throw new AppError('Conta indisponível para renovar sessão.', 403, null, true);
+    throw new AppError(AUTH_MESSAGES.ACCOUNT_UNAVAILABLE_REFRESH, 403, null, true);
   }
 
   const tokens = await issueTokenPairForUser(user);
@@ -243,13 +424,11 @@ async function refreshToken({ refresh_token }) {
   };
 }
 
-/**
- * POST /logout — exige access válido (middleware) + corpo com refresh.
- */
+/** POST /logout — exige access válido + corpo com refresh. */
 async function logout({ refresh_token }, accessUser) {
   const raw = `${refresh_token ?? ''}`.trim();
   if (!raw) {
-    throw new AppError('Informe o refresh token no corpo para encerrar a sessão com segurança.', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.LOGOUT_REFRESH_REQUIRED, 400, null, true);
   }
 
   assertJwtSecretsLoaded();
@@ -257,31 +436,30 @@ async function logout({ refresh_token }, accessUser) {
   try {
     payload = jwt.verify(raw, process.env.JWT_REFRESH_SECRET, jwtVerifyOptions());
   } catch (_) {
-    throw new AppError('Refresh token inválido.', 401, null, true);
+    throw new AppError(AUTH_MESSAGES.LOGOUT_REFRESH_INVALID, 401, null, true);
   }
 
   if (payload.token_use !== 'refresh' || `${payload.sub}` !== `${accessUser.id}`) {
-    throw new AppError('Refresh token não pertence à sessão atual.', 403, null, true);
+    throw new AppError(AUTH_MESSAGES.LOGOUT_REFRESH_WRONG_SUBJECT, 403, null, true);
   }
 
   await revokeRefreshByJti(payload.jti);
   return { encerrado: true };
 }
 
-function buildNumericOtpSixDigits() {
-  return crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+function buildNumericOtpCode() {
+  const n = AUTH_CONFIG.otpDigits;
+  const max = 10 ** n;
+  return crypto.randomInt(0, max).toString().padStart(n, '0');
 }
 
-/**
- * POST /forgot-password — sempre resposta genérica.
- */
+/** POST /forgot-password — resposta sempre genérica. */
 async function forgotPassword({ email }, reqMeta = {}) {
   const mail = normalizeEmail(email);
-  if (!mail) {
+  if (!mail || !isValidEmailFormat(mail)) {
     return {
       enviado: true,
-      mensagem_simulada:
-        'Se o e-mail existir em nossa base, você receberá instruções para redefinir a senha.',
+      mensagem_simulada: AUTH_MESSAGES.FORGOT_PASSWORD_GENERIC_SHORT,
     };
   }
 
@@ -292,62 +470,67 @@ async function forgotPassword({ email }, reqMeta = {}) {
       {
         where: {
           user_id: user.id,
-          purpose: 'RESET_PASSWORD',
+          purpose: AUTH_CONFIG.otpPurposeResetPassword,
           consumed_at: null,
         },
       }
     );
 
-    const plainOtp = buildNumericOtpSixDigits();
-    const codeHash = await bcrypt.hash(plainOtp, 10);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const plainOtp = buildNumericOtpCode();
+    const codeHash = await bcrypt.hash(plainOtp, AUTH_CONFIG.bcryptCostPassword);
+    const expiresAt = new Date(Date.now() + AUTH_CONFIG.otpTtlMinutes * 60 * 1000);
 
     await OTP.create({
       user_id: user.id,
-      purpose: 'RESET_PASSWORD',
+      purpose: AUTH_CONFIG.otpPurposeResetPassword,
       code: codeHash,
       expires_at: expiresAt,
       attempts_count: 0,
-      max_attempts: 5,
-      delivery_channel: 'EMAIL',
+      max_attempts: AUTH_CONFIG.maxOtpAttempts,
+      delivery_channel: AUTH_CONFIG.otpDeliveryChannelEmail,
       ip_address_created: reqMeta.ip || null,
       user_agent_created: reqMeta.userAgent || null,
     });
 
     void mailService.sendOtpEmail(mail, plainOtp);
+
+    await recordAuthSecurityAudit({
+      action: 'AUTH_FORGOT_PASSWORD_SEND',
+      userId: user.id,
+      ip: reqMeta.ip,
+      userAgent: reqMeta.userAgent,
+    });
   }
 
   return {
     enviado: true,
-    mensagem_simulada:
-      'Se o e-mail existir em nossa base, você receberá instruções para redefinir a senha nos próximos minutos.',
+    mensagem_simulada: AUTH_MESSAGES.FORGOT_PASSWORD_GENERIC_LONG,
   };
 }
 
-/**
- * POST /reset-password
- */
-async function resetPassword({ email, otp, new_password }) {
+/** POST /reset-password */
+async function resetPassword({ email, otp, new_password }, reqMeta = {}) {
+  assertEmailFormat(email);
   const mail = normalizeEmail(email);
   const plainOtp = `${otp ?? ''}`.trim();
-  await assertPasswordPolicy(new_password);
+  assertPasswordPolicy(new_password);
 
   if (!mail || !plainOtp) {
-    throw new AppError('Dados insuficientes para redefinir a senha.', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.RESET_INSUFFICIENT_DATA, 400, null, true);
   }
 
   const user = await User.findOne({ where: { email: mail } });
   if (!user) {
-    throw new AppError('Código inválido ou expirado.', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.RESET_CODE_INVALID_OR_EXPIRED, 400, null, true);
   }
   if (!user.is_active || user.blocked_at) {
-    throw new AppError('Código inválido ou expirado.', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.RESET_CODE_INVALID_OR_EXPIRED, 400, null, true);
   }
 
   const otpRow = await OTP.findOne({
     where: {
       user_id: user.id,
-      purpose: 'RESET_PASSWORD',
+      purpose: AUTH_CONFIG.otpPurposeResetPassword,
       consumed_at: null,
       expires_at: { [Op.gt]: new Date() },
     },
@@ -355,11 +538,11 @@ async function resetPassword({ email, otp, new_password }) {
   });
 
   if (!otpRow) {
-    throw new AppError('Código inválido ou expirado.', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.RESET_CODE_INVALID_OR_EXPIRED, 400, null, true);
   }
 
   if (otpRow.attempts_count >= otpRow.max_attempts) {
-    throw new AppError('Número máximo de tentativas para este código foi excedido.', 429, null, true);
+    throw new AppError(AUTH_MESSAGES.RESET_OTP_MAX_ATTEMPTS, 429, null, true);
   }
 
   const match = await bcrypt.compare(plainOtp, otpRow.code);
@@ -367,12 +550,12 @@ async function resetPassword({ email, otp, new_password }) {
     await otpRow.increment('attempts_count');
     await otpRow.reload();
     if (otpRow.attempts_count >= otpRow.max_attempts) {
-      throw new AppError('Número máximo de tentativas para este código foi excedido.', 429, null, true);
+      throw new AppError(AUTH_MESSAGES.RESET_OTP_MAX_ATTEMPTS, 429, null, true);
     }
-    throw new AppError('Código inválido ou expirado.', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.RESET_CODE_INVALID_OR_EXPIRED, 400, null, true);
   }
 
-  const password_hash = await bcrypt.hash(new_password, 12);
+  const password_hash = await bcrypt.hash(new_password, AUTH_CONFIG.bcryptCostPassword);
   await sequelize.transaction(async (t) => {
     await user.update({ password_hash }, { transaction: t });
     await otpRow.update({ consumed_at: new Date() }, { transaction: t });
@@ -380,47 +563,53 @@ async function resetPassword({ email, otp, new_password }) {
 
   await revokeAllRefreshTokensForUser(user.id);
 
+  await recordAuthSecurityAudit({
+    action: 'AUTH_PASSWORD_RESET_SUCCESS',
+    userId: user.id,
+    ip: reqMeta.ip,
+    userAgent: reqMeta.userAgent,
+  });
+
   return { redefinido: true };
 }
 
-/**
- * GET /me
- */
+/** GET /me */
 async function getMe(userId) {
   const user = await User.findByPk(userId, {
     include: [{ model: Client, as: 'client_profile', required: false }],
   });
   if (!user) {
-    throw new AppError('Usuário não encontrado.', 404, null, true);
+    throw new AppError(AUTH_MESSAGES.USER_NOT_FOUND, 404, null, true);
   }
   return { usuario: sanitizeUserRecord(user) };
 }
 
-/**
- * PATCH /me — cadastro progressivo no perfil Client.
- */
+/** PATCH /me */
 async function patchMeProfile(userId, body) {
   const user = await User.findByPk(userId, {
     include: [{ model: Client, as: 'client_profile', required: false }],
   });
   if (!user) {
-    throw new AppError('Usuário não encontrado.', 404, null, true);
+    throw new AppError(AUTH_MESSAGES.USER_NOT_FOUND, 404, null, true);
   }
-  if (user.role !== 'CLIENTE' || !user.client_profile) {
-    throw new AppError('Esta conta não possui perfil de cliente editável por esta rota.', 403, null, true);
+  if (user.role !== AUTH_CONFIG.roleClienteNoRegistro || !user.client_profile) {
+    throw new AppError(AUTH_MESSAGES.PROFILE_NOT_CLIENT_EDITABLE, 403, null, true);
   }
 
+  const maxNome = AUTH_CONFIG.profileNomeMaxLength;
+  const maxTratarPor = AUTH_CONFIG.profileTratarPorMaxLength;
+
   const allowed = {};
-  if (typeof body.nome !== 'undefined') allowed.nome = body.nome == null ? null : `${body.nome}`.trim().slice(0, 160);
+  if (typeof body.nome !== 'undefined') allowed.nome = body.nome == null ? null : `${body.nome}`.trim().slice(0, maxNome);
   if (typeof body.tratar_por !== 'undefined') {
-    allowed.tratar_por = body.tratar_por == null ? null : `${body.tratar_por}`.trim().slice(0, 120);
+    allowed.tratar_por = body.tratar_por == null ? null : `${body.tratar_por}`.trim().slice(0, maxTratarPor);
   }
   if (typeof body.data_nascimento !== 'undefined') {
     allowed.data_nascimento = body.data_nascimento == null || body.data_nascimento === '' ? null : body.data_nascimento;
   }
 
   if (Object.keys(allowed).length === 0) {
-    throw new AppError('Nenhum campo permitido enviado (nome, tratar_por, data_nascimento).', 400, null, true);
+    throw new AppError(AUTH_MESSAGES.PROFILE_PATCH_NO_FIELDS, 400, null, true);
   }
 
   await user.client_profile.update(allowed);
@@ -441,4 +630,7 @@ module.exports = {
   resetPassword,
   getMe,
   patchMeProfile,
+  verifyEmailFromToken,
+  resendVerificationEmail,
+  syncEmailPendingReviewFlags,
 };
