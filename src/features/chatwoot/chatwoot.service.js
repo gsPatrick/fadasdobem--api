@@ -85,6 +85,14 @@ function resolveActiveAiProvider() {
   );
 }
 
+/** Liga/desliga envio da resposta IA ao Chatwoot (`true`/`1`/`yes`/`on` = ativo). Vazio ou `false` = inativo (útil em dev). */
+function isChatwootIaAutoReplyEnabled() {
+  const raw = `${process.env.CHATWOOT_IA_AUTO_REPLY || ''}`.trim().toLowerCase();
+  if (!raw) return false;
+  if (['false', '0', 'no', 'off'].includes(raw)) return false;
+  return ['true', '1', 'yes', 'on'].includes(raw);
+}
+
 /** E-mail sintético único: modelo `User` exige email + validação isEmail até haver cadastro completo. */
 function buildProvisionalEmailForChatwoot(contactId) {
   const h = crypto.createHash('sha256').update(String(contactId), 'utf8').digest('hex');
@@ -162,6 +170,17 @@ async function processWebhookEnvelopeImpl(rawBody) {
   }
   if (!textContent) {
     return { skipped: true, reason: 'mensagem sem texto utilizável' };
+  }
+
+  if (!isChatwootIaAutoReplyEnabled()) {
+    console.log(
+      '[ChatwootService] Resposta automática pela IA desligada (CHATWOOT_IA_AUTO_REPLY≠true); nada será enviado ao Chatwoot.'
+    );
+    return {
+      skipped: true,
+      reason: 'CHATWOOT_IA_AUTO_REPLY não habilitado (defina true no .env para a IA responder)',
+      ia_auto_reply: false,
+    };
   }
 
   console.log('[ChatwootService] Mensagem de humano recebida. Chamando IA...', {
