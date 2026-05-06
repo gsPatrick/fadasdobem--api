@@ -43,6 +43,29 @@ app.get('/health', (_req, res) => {
   );
 });
 
+/**
+ * Raiz — health checks de plataforma costumam usar GET / sem path.
+ * Evita 404 ruidoso no errorHandler.
+ */
+app.get('/', (_req, res) => {
+  return responderSucesso(
+    res,
+    {
+      servico: 'fadasdobem-api',
+      versao: API_VERSION_SEMVER,
+      porta: Number(port),
+      documentacao_raiz: { health: '/health', ping: '/ping', api: '/api/v1/health' },
+    },
+    'API no ar. Use /health ou /ping para probes.',
+    200
+  );
+});
+
+/** Browsers pedem favicon por defeito — resposta vazia evita erro 404 nos logs. */
+app.get('/favicon.ico', (_req, res) => {
+  res.status(204).end();
+});
+
 app.use(notFoundMiddleware);
 app.use(errorHandlerMiddleware);
 
