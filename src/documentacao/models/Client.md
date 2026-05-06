@@ -12,4 +12,4 @@
 | `manual_price_override` | Boolean | Não | Congela regras automáticas. |
 | Endereço / apelidos / notas internas | diversos | Ver model. |
 
-Para matriz completa de FKs e índices parciais, ver `src/models/Relacionamentos_FKs.md`.
+Para matriz completa de FKs e índices parciais, ver [`Relacionamentos_FKs.md`](./Relacionamentos_FKs.md).

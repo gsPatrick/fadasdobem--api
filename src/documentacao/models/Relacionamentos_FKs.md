@@ -116,7 +116,6 @@ Registros com `deleted_at` preenchido **não devem impedir reuso de chaves de ne
 
 ## Manutenção
 
-Sempre que um novo `belongsTo`/`hasMany` for adicionado em `index.js` **ou** surgir novo `*_id` em algum Model, atualize:
+Sempre que um novo `belongsTo`/`hasMany` for adicionado em `index.js` **ou** surgir novo `*_id` em algum Model, atualizar a matriz de FK deste ficheiro (coluna + destino esperado).
 
-1. A matriz de FK deste arquivo (coluna + destino esperado).
-2. O arquivo espelho `src/documentacao/Relacionamentos_FKs.md` (link curto apenas).
+O atalho em `src/documentacao/Relacionamentos_FKs.md` não duplica conteúdo; serve apenas para redirects de documentação legada.

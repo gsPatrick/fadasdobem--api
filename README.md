@@ -1,18 +1,18 @@
-# 📖 Fadas do Bem - Arquitetura e Dicionário de Dados
+# Plataforma Fadas do Bem — Arquitetura de dados e contrato técnico (Fase 1)
 
 ---
 
 ## Visão executiva
 
-Este documento **oficializa a fundação de dados da Fase 1** da plataforma **Fadas do Bem**. O modelo relacional foi desenhado para **alta disponibilidade**, suportando com segurança a **fila inteligente de atendimento**, o **cronômetro de consultas** (política comercial **2+X+2**), e uma **camada financeira integrada ao Mercado Pago** — com rastreamento ponta a ponta de cobrança, NFS-e automatizada onde aplicável e governança de saldo compatível com **LGPD**.
+Este documento oficializa o **contrato técnico da Fase 1** do sistema **Fadas do Bem**: modelo relacional, papel de cada entidade núcleo no domínio da aplicação e decisões de modelagem consideradas bloqueantes para evoluções subsequentes. O desenho objetiva **alta disponibilidade** e suporte transacional à **fila inteligente de atendimento**, ao **cronômetro de consultas** com política comercial **2+X+2**, e a uma **camada financeira integrada ao Mercado Pago** — incluindo rastreabilidade ponta a ponta de cobrança, NFS-e automatizada onde aplicável e governança de saldo compatível com **LGPD**.
 
-> **Espelho no GitHub:** a pasta **`/src/documentacao`** organiza materiais ao lado do mesmo repositório da API. Aqui, **`/models`** reflete diretamente o **banco de dados** (campos e tabelas). Em evoluções futuras, pastas paralelas (**`/features`** e correlatas) receberão descrições de produto correspondentes a cada módulo funcional da API — mantendo no GitHub um “mapa” claro entre **estrutura de dados**, **módulos** e **valor de negócio**.
+A pasta **`src/documentacao`** é o repositório normativo de dados da API ao lado deste repositório. Em **`src/documentacao/models/`**, a especificação reflete diretamente o **esquema persistido** (campos e tabelas); **`src/documentacao/models/Relacionamentos_FKs.md`** documenta integridade referencial. Em evoluções, artefatos em **`src/features`** e módulos correlatos devem permanecer consistentes com esta base, preservando correspondência entre **estrutura de dados**, **código aplicacional** e **regras de negócio** versionadas.
 
 ---
 
 ## Diagrama macro (ERD)
 
-O diagrama abaixo sintetiza as entidades núcleo e suas relações. No GitHub, ele é renderizado automaticamente a partir da sintaxe Mermaid.
+O diagrama sintetiza entidades núcleo e cardinalidades. Ambientes compatíveis com Mermaid renderizam o bloco abaixo diretamente.
 
 ```mermaid
 erDiagram
@@ -63,7 +63,7 @@ erDiagram
 |**`staff_profiles`**|Dados corporativos de **Gestoras** e **Atendentes**, separados do perfil público de clientes e especialistas.|
 |**`clients`**|Perfil da **cliente** com dados progressivos de cadastro (inclui endereços e LGPD sócio-técnica via `users`) e vínculo com **níveis de precificação** e exceções comerciais acordadas com a Gestora.|
 |**`specialists`**|Perfil público-operacional das **tarólogas**, incluindo vitrine (bio, PIX), disponibilidade, integrações (**Chatwoot**, **Intelbras**, **Agora**) e **trava de pré-reserva** para evitar conflitos no checkout.|
-|**`specialist_modalidades`**|Define quais canais (**texto**, **voz**, **vídeo**) cada especialista atende, alimentando matching e filas.|
+|**`specialist_modalities`**|Define quais canais (**texto**, **voz**, **vídeo**) cada especialista atende, alimentando matching e filas.|
 |**`oracles`** e **`specialist_oracles`**|Catálogo editorial de **oráculos** e vínculos N:M com as especialistas, para vitrine filtrável e relatórios.|
 |**`pricing_levels`**|Camada de **preço dinâmico**, separando **tarifa texto/voz** e **tarifa vídeo**, com promoções aplicáveis (ex.: primeira consulta).|
 |**`queues`**|Representa clientes **em espera** para entrada na consulta ao vivo (com especialista opcional ou fila inteligente).|
@@ -80,7 +80,7 @@ erDiagram
 
 ---
 
-## Decisões arquiteturais críticas *(nosso diferencial)*
+## Decisões arquiteturais críticas
 
 - **Transações de dupla entrada (Ledger)** — Cada movimentação econômica relevante aparece simultaneamente como **saída** de uma conta e **entrada** em outra, com valores auditáveis (`transaction_ledger`). Isso garante reconciliação com o esperado pela **Gestora** e pela **Financeira**, e evita cenários onde a carteira “apareça” maior ou menor sem explicação (prevenindo saldo inexplicável e inconsistências graves que afetariam cliente e reputação).
 
@@ -94,8 +94,8 @@ erDiagram
 
 ## Onde encontrar o detalhamento por tabela
 
-A listagem **campo a campo**, tipos, nulidade e observações de cada regra está nos arquivos individuais do diretório **`/src/documentacao/models/`** (por exemplo `User.md`, `Session.md`, `PaymentOrder.md`). Recomenda-se manter esse subdiretório como **contrato vivo** sempre que migrações ou novos fluxos alterarem colunas ou índices.
+A listagem **campo a campo**, tipos, nulidade e índices encontra-se nos ficheiros individuais de **`src/documentacao/models/`** (por exemplo `User.md`, `Session.md`, `PaymentOrder.md`). Alterações ao esquema físico devem ser refletidas nesses artefatos na mesma entrega ou imediatamente após migrações aplicadas — o subdiretório **constitui contrato vivo** em relação ao modelo persistido.
 
 ---
 
-*Última camada atualizada na **Fase 1 — modelo de dados** da Fadas do Bem. Evoluções de produto devem atualizar primeiro o repositório e, na sequência, este espelho de documentação no GitHub.*
+*Escopo: **Fase 1 — modelo de dados** do sistema Fadas do Bem. Atualizações de produto que impliquem mudanças de esquema ou de invariantes de negócio devem atualizar primeiro o modelo persistido e, em seguida, este contrato.*
