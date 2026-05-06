@@ -12,6 +12,7 @@ const notFoundMiddleware = require('./src/middlewares/notFound.middleware');
 const errorHandlerMiddleware = require('./src/middlewares/errorHandler.middleware');
 const { responderSucesso } = require('./src/utils/response.util');
 const { warmupAssistantsSilent } = require('./src/providers/openai/openai.setup');
+const { API_VERSION_SEMVER } = require('./src/config/version');
 require('./src/models');
 
 const app = express();
@@ -24,8 +25,22 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 app.use('/api', routes);
 
+app.get('/ping', (_req, res) => {
+  return responderSucesso(
+    res,
+    { pong: true, versao: API_VERSION_SEMVER },
+    'pong',
+    200
+  );
+});
+
 app.get('/health', (_req, res) => {
-  return responderSucesso(res, { servico: 'fadasdobem-api', porta: Number(port) }, 'API disponível.', 200);
+  return responderSucesso(
+    res,
+    { servico: 'fadasdobem-api', versao: API_VERSION_SEMVER, porta: Number(port) },
+    'API disponível.',
+    200
+  );
 });
 
 app.use(notFoundMiddleware);

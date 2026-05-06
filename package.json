@@ -1,6 +1,6 @@
 {
   "name": "fadasdobem-api",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "API REST — Fadas do Bem (consultas ao vivo)",
   "main": "app.js",
   "scripts": {
