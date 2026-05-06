@@ -1,0 +1,86 @@
+const { Model, DataTypes } = require('sequelize');
+
+const REF_TYPES = [
+  'PAYMENT_TOPUP',
+  'SESSION_CONSUMPTION',
+  'COMMISSION_SPLIT',
+  'REFUND',
+  'CHARGEBACK',
+  'PAYOUT',
+  'ADJUSTMENT_ADMIN',
+  'CREDIT_EXPIRY',
+  'RESERVATION_HOLD',
+];
+
+class TransactionLedger extends Model {}
+
+module.exports = (sequelize) => {
+  TransactionLedger.init(
+    {
+      id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true,
+      },
+      debit_account_id: {
+        type: DataTypes.UUID,
+        allowNull: false,
+      },
+      credit_account_id: {
+        type: DataTypes.UUID,
+        allowNull: false,
+      },
+      amount: {
+        type: DataTypes.DECIMAL(14, 4),
+        allowNull: false,
+        validate: { min: 0 },
+        comment: 'Sempre positivo; sentido definido por débito/crédito — precisão BRL estrita',
+      },
+      reference_type: {
+        type: DataTypes.ENUM(...REF_TYPES),
+        allowNull: false,
+      },
+      reference_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        comment: 'ID da entidade de origem (sessão, payment_order, payout, etc.)',
+      },
+      idempotency_key: {
+        type: DataTypes.STRING(191),
+        allowNull: true,
+        unique: true,
+        comment: 'Evita duplicidade em webhooks e retentativas',
+      },
+      description: { type: DataTypes.STRING(512), allowNull: true },
+      metadata: { type: DataTypes.JSONB, allowNull: true },
+      occurred_at: {
+        type: DataTypes.DATE,
+        allowNull: false,
+        defaultValue: DataTypes.NOW,
+        comment: 'Momento econômico do evento (pode diferir do created_at)',
+      },
+      created_by_user_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        comment: 'Gestora em lançamentos manuais',
+      },
+    },
+    {
+      sequelize,
+      modelName: 'TransactionLedger',
+      tableName: 'transaction_ledger',
+      paranoid: false,
+      updatedAt: false,
+      timestamps: true,
+      createdAt: 'created_at',
+      indexes: [
+        { fields: ['debit_account_id'] },
+        { fields: ['credit_account_id'] },
+        { fields: ['reference_type', 'reference_id'] },
+      ],
+    }
+  );
+
+  TransactionLedger.REF_TYPES = REF_TYPES;
+  return TransactionLedger;
+};

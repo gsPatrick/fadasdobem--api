@@ -1,0 +1,117 @@
+{
+  "info": {
+    "_postman_id": "fadbem-single-collection-v1",
+    "name": "Fadas do Bem",
+    "description": "Collection única do projeto — pastas Evolution, Chatwoot, API própria e Autenticação. Variáveis: Environment `Fadas do Bem — Local`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Evolution API",
+      "description": "Chamadas diretas ao cluster Evolution API (Easypanel). Credenciais em `{{evolution_apikey}}` e `{{evolution_url}}`.",
+      "item": [
+        {
+          "name": "1. Criar Instância + Integrar Chatwoot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "apikey",
+                "value": "{{evolution_apikey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"instanceName\": \"fadas_whatsapp\",\n  \"qrcode\": true,\n  \"integration\": \"CHATWOOT\",\n  \"chatwootAccountId\": \"{{chatwoot_account_id}}\",\n  \"chatwootToken\": \"{{chatwoot_token}}\",\n  \"chatwootUrl\": \"{{chatwoot_url}}\",\n  \"chatwootSignMsg\": true,\n  \"chatwootReopenConversation\": true,\n  \"chatwootConversationPending\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{evolution_url}}/instance/create",
+            "description": "Cria instância na Evolution com integração ao Chatwoot (proxy administrativo ficará na API própria em fases futuras)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Chatwoot",
+      "description": "Webhooks acionados pelo painel Chatwoot + proxies administrativos via `chatwoot_url` / token.",
+      "item": [
+        {
+          "name": "Webhook (simulação)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"message_created\",\n  \"content\": \"Quanto eu tenho de saldo?\",\n  \"message_type\": \"incoming\",\n  \"sender\": {\n    \"type\": \"contact\",\n    \"id\": \"999\"\n  },\n  \"conversation\": {\n    \"id\": \"4242\"\n  },\n  \"message\": {\n    \"id\": \"msg-inner\",\n    \"content\": \"Quanto eu tenho de saldo?\",\n    \"message_type\": \"incoming\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{api_base_url}}/chatwoot/webhook",
+            "description": "`POST /api/v1/chatwoot/webhook` — garanta `users.chatwoot_contact_id` igual a `sender.id`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Fadas do Bem API",
+      "description": "Rotas públicas/internas servidas pela aplicação Node (`{{api_base_url}}`).",
+      "item": [
+        {
+          "name": "Healthcheck",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{api_base_url}}/health",
+            "description": "`GET /api/v1/health` — base de smoke test local."
+          },
+          "response": []
+        },
+        {
+          "name": "Evolution Admin — instances",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{api_base_url}}/evolution-admin/instances",
+            "description": "`GET /api/v1/evolution-admin/instances` — painel Gestora stub."
+          },
+          "response": []
+        },
+        {
+          "name": "Evolution Admin — status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{api_base_url}}/evolution-admin/integrations/status",
+            "description": "Probe rápido reachability Evolution usando global API KEY."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Autenticação",
+      "description": "Login, refresh, OTP e OAuth próprios conforme fluxos JWT forem disponibilizados em `/features/auth`. Pasta reservada para não misturar com integrações externas.",
+      "item": []
+    }
+  ]
+}

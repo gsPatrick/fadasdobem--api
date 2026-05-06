@@ -1,0 +1,41 @@
+# Dependências e artefatos locais
+node_modules
+npm-debug.log*
+yarn-error.log*
+
+# Secrets e ambientes (use variáveis do Easypanel / runtime)
+.env
+.env.*
+!.env.example
+
+# VCS / IDE / SO
+.git
+.gitignore
+.github
+.idea
+.vscode
+.cursor
+
+# Artefatos e logs locais
+*.log
+logs
+tmp
+temp
+
+# Testes / cobertura
+coverage
+.nyc_output
+
+# Postman local (coleções ficam só no repo dev)
+postman
+src/postman
+**/postman
+
+# Markdown genéricos (mantém apenas documentação da API em src/documentacao)
+**/*.md
+!src/documentacao/
+!src/documentacao/**
+
+# Sobras comuns macOS / Windows
+.DS_Store
+Thumbs.db
