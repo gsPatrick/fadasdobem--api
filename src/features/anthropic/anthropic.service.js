@@ -49,6 +49,14 @@ async function generateReplyFromMessages(seedMessages) {
     let lastAssistantText = '';
 
     for (let round = 0; round < maxToolRounds; round += 1) {
+      console.log('[AnthropicService] Chamando API Anthropic / messages.create', {
+        round,
+        model: defaultModelId(),
+        max_tokens: maxTokens(),
+        toolsCount: Array.isArray(tools) ? tools.length : 0,
+        seedTurnCount: seedMessages?.length ?? 0,
+        currentMessagesCount: messages.length,
+      });
       // eslint-disable-next-line no-await-in-loop
       const response = await client.messages.create({
         model: defaultModelId(),
@@ -105,8 +113,8 @@ async function generateReplyFromMessages(seedMessages) {
 
     console.error('[anthropic.service] Limite de voltas de Tool Use excedido.');
     return lastAssistantText || prompts.FALLBACK_IA_UNAVAILABLE;
-  } catch (err) {
-    console.error('[anthropic.service]', err?.message || err);
+  } catch (error) {
+    console.error('[AnthropicService] Erro na API do Claude:', error.response ? error.response.data : error.message);
     return prompts.FALLBACK_IA_UNAVAILABLE;
   }
 }

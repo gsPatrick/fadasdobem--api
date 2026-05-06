@@ -23,12 +23,33 @@ function extractPayloadShape(body) {
   return envelope || {};
 }
 
+/**
+ * Tipos de sender reportados pelo Chatwoot (payload varia por canal / versão).
+ */
+function resolveSenderTypes(parsed, envelope) {
+  const msgBlock = parsed.message || parsed;
+  const senderDirect = parsed.sender || msgBlock?.sender;
+  return {
+    messageSenderType: msgBlock?.sender?.type ?? null,
+    topLevelSenderType: senderDirect?.type ?? null,
+    conversationMetaSenderType:
+      parsed.conversation?.meta?.sender?.type ?? envelope?.conversation?.meta?.sender?.type ?? null,
+  };
+}
+
+function isMessageCreatedEvent(eventStr) {
+  return `${eventStr}`.trim().toLowerCase() === 'message_created';
+}
+
 function isIncomingVisitorMessage(parsed) {
   const msg = parsed.message || parsed;
-  const type = msg?.message_type ?? msg?.type;
-  if (type === 'outgoing' || type === 1 || type === '1') return false;
-  const sender = parsed.sender || msg?.sender;
-  if (sender?.type && sender.type !== 'contact') return false;
+  const mt = msg?.message_type ?? msg?.type;
+  if (mt === 'outgoing' || mt === 1 || mt === '1') return false;
+  const senderType =
+    msg?.sender?.type ??
+    parsed.sender?.type ??
+    parsed.conversation?.meta?.sender?.type;
+  if (String(senderType || '').toLowerCase() !== 'contact') return false;
   return true;
 }
 
@@ -163,11 +184,18 @@ function buildAnthropicTurnsFromChatwootRows(rows, latestInboundPlaintext) {
 async function processWebhookEnvelopeImpl(rawBody) {
   const envelope = typeof rawBody === 'object' ? rawBody : {};
   const event = envelope.event || envelope.meta?.event;
-  if (!event || !/^message_/i.test(String(event))) {
-    return { skipped: true, reason: 'evento não é tipo message_*' };
+  const parsed = extractPayloadShape(envelope);
+  const senderInfo = resolveSenderTypes(parsed, envelope);
+
+  console.log('[ChatwootService] Webhook recebido:', {
+    event: event ?? null,
+    sender: senderInfo,
+  });
+
+  if (!event || !isMessageCreatedEvent(event)) {
+    return { skipped: true, reason: 'evento não é message_created' };
   }
 
-  const parsed = extractPayloadShape(envelope);
   const textContent = extractInboundText(parsed).trim();
   const conversationId = extractConversationId(parsed);
   const contactId = extractContactId(parsed);
@@ -176,11 +204,16 @@ async function processWebhookEnvelopeImpl(rawBody) {
     return { skipped: true, reason: 'ids ausentes' };
   }
   if (!isIncomingVisitorMessage(parsed)) {
-    return { skipped: true, reason: 'ignoramos mensagens de agente/outgoing' };
+    return { skipped: true, reason: 'ignoramos mensagens de agente/outgoing ou sender ≠ contact' };
   }
   if (!textContent) {
     return { skipped: true, reason: 'mensagem sem texto utilizável' };
   }
+
+  console.log('[ChatwootService] Mensagem de humano recebida. Chamando IA...', {
+    conversationId,
+    contactId,
+  });
 
   const user = await User.findOne({
     where: {
@@ -213,6 +246,7 @@ async function processWebhookEnvelopeImpl(rawBody) {
 
   try {
     await chatwootClient.postTextReply(accountId, conversationId, reply);
+    console.log('[ChatwootClient] Resposta enviada com sucesso!');
   } catch (err) {
     if (!axios.isAxiosError(err)) throw err;
     throw new AppError(
